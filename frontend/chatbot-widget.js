@@ -1,7 +1,7 @@
 (function () {
-  /* -------------------- INIT AFTER SMALL DELAY -------------------- */
+  /* -------------------- ESEGUE IL PRIMA POSSIBILE -------------------- */
   setTimeout(() => {
-    /* 0) Inject Intro.js se non già presente */
+    /* Metto introjs tra il link e script */
     if (typeof introJs === 'undefined') {
       console.log('[Tour] Injecting Intro.js assets…');
       const link   = Object.assign(document.createElement('link'), {
@@ -14,7 +14,7 @@
       document.head.append(link, script);
     }
 
-    /* 1) Chatbot UI */
+    /* Chatbot UI (Frontend) */
     const wrapper = document.createElement('div');
     wrapper.innerHTML = `
       <button id="chatbot-icon" class="chatbot-icon"></button>
@@ -24,21 +24,60 @@
       </div>`;
     document.body.appendChild(wrapper);
 
-    /* 2) Element references */
-    const icon       = wrapper.querySelector('#chatbot-icon');
-    const chatWin    = wrapper.querySelector('#chatbot-window');
-    const inputEl    = wrapper.querySelector('#chatbot-input');
+    /* Riferimenti ai vari elementi del frontend tramite id */
+    const icon      = wrapper.querySelector('#chatbot-icon');
+    const chatWin   = wrapper.querySelector('#chatbot-window');
+    const inputEl   = wrapper.querySelector('#chatbot-input');
     const messagesEl = wrapper.querySelector('#chatbot-messages');
     if (!icon || !chatWin || !inputEl || !messagesEl) {
       return console.error('[Chatbot] Missing elements!');
     }
-    icon.addEventListener('click', () => chatWin.classList.toggle('hidden'));
 
-    /* ---------- utility helpers ---------- */
+    let chatbotHiddenByOverlap = false; // flag che indica se il chatbot è stato nascosto tramite la logica di overlapping
+    let lastKnownChatbotRect = null;    // possiede le specifiche dell'ultimo rettangolo della chat testuale
+
+    // inizializziamo il rettangolo di chatwin se esso è visibile per default
+    if (!chatWin.classList.contains('hidden')) {
+      lastKnownChatbotRect = chatWin.getBoundingClientRect();
+    }
+
+    icon.addEventListener('click', () => {
+      // prima di fare il toggle del button e quindi mostrare/nascondere il chatbot, salviamo il rettangolo box del chatbot
+      if (!chatWin.classList.contains('hidden')) {
+        lastKnownChatbotRect = chatWin.getBoundingClientRect();
+      }
+      chatWin.classList.toggle('hidden');
+      chatbotHiddenByOverlap = false;
+      console.log('[Chatbot] User clicked icon. chatbotHiddenByOverlap reset to false.');
+    });
+
+    /* FUNZIONI DI UTILITA' */
     const appendMessage = (txt, who) => {
-      const div  = document.createElement('div');
-      div.textContent = txt;
-      div.className   = `chatbot-msg ${who}`;
+      const div = document.createElement('div');
+      div.className = `chatbot-msg ${who}`;
+
+      if (who === 'bot') {
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        const moreInfoRegex = /(More info:\s*)(https?:\/\/[^\s]+)/g;
+
+        let processedTxt = txt;
+
+        processedTxt = processedTxt.replace(moreInfoRegex, (match, p1, url) => {
+            return `${p1}<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+        });
+
+        processedTxt = processedTxt.replace(urlRegex, (url) => {
+            if (!url.includes('<a href=')) {
+                return `<a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+            }
+            return url;
+        });
+
+        div.innerHTML = processedTxt;
+      } else {
+        div.textContent = txt;
+      }
+
       messagesEl.appendChild(div);
       setTimeout(() => messagesEl.scrollTop = messagesEl.scrollHeight, 0);
     };
@@ -73,7 +112,82 @@
       el.style.transform  = el._orig.t || '';
     };
 
-    /* 3) Input handler */
+    // identifica se due rettangoli in entrata siano o meno in overlapping
+    const elementsOverlap = (el1, rect2_or_el2) => {
+        if (!el1 || !rect2_or_el2) return false;
+        const rect1 = el1.getBoundingClientRect();
+        let rect2;
+        if (rect2_or_el2 instanceof HTMLElement) {
+            rect2 = rect2_or_el2.getBoundingClientRect();
+        } else {
+            rect2 = rect2_or_el2;
+        }
+
+
+        return !(
+            rect1.right < rect2.left ||
+            rect1.left > rect2.right ||
+            rect1.bottom < rect2.top ||
+            rect1.top > rect2.bottom
+        );
+    };
+
+    let overlapCheckInterval; // variabile di overlapping
+
+    /* Funzione per capire dinamicamente se rendere visibile/invisibile il chatbot durante la guida visuale, in particolare se c'è overlap fra le due cose */
+    const handleChatbotVisibilityBasedOnTourElements = () => {
+        if (!chatWin || !document.body.contains(chatWin)) {
+            console.warn('[Chatbot] Chat window not found or removed from DOM. Stopping overlap check.');
+            clearInterval(overlapCheckInterval);
+            return;
+        }
+
+        const introjsTooltip = document.querySelector('.introjs-tooltip');
+        const introjsHelperLayer = document.querySelector('.introjs-helperLayer');
+
+        const isChatbotHidden = chatWin.classList.contains('hidden');
+        let shouldHideChatbot = false; // default
+
+        const isTourActive = introjsTooltip || introjsHelperLayer; // guarda se la guida visuale sia presente attualmente
+
+        // per determinare quale rettangolo utilizzare tra quello precedente o attuale per capire se c'è overlap o meno
+        let currentChatbotRectForOverlap = isChatbotHidden ? lastKnownChatbotRect : chatWin.getBoundingClientRect();
+        if (isChatbotHidden && !currentChatbotRectForOverlap) {
+            console.log('[Chatbot] Chatbot hidden, no last known rect. Skipping overlap check for now.');
+            return;
+        }
+
+        if (isTourActive) {
+            // se la guida visuale è attiva bisogna capire se nascondere o meno il chatbot nei casi di overlap
+            if ((introjsTooltip && elementsOverlap(introjsTooltip, currentChatbotRectForOverlap)) ||
+                (introjsHelperLayer && elementsOverlap(introjsHelperLayer, currentChatbotRectForOverlap))) {
+                shouldHideChatbot = true; // con l'overlap nascondiamo il chatbot
+            } else {
+                shouldHideChatbot = false; // non c'è overlap quindi può essere mostrato
+            }
+        } else {
+            // se la guida visuale non è attiva il chatbot dovrebbe essere mostrato
+            shouldHideChatbot = false;
+        }
+
+        // core Logic per prevenire i loop
+        if (shouldHideChatbot && !isChatbotHidden) {
+            console.log('[Chatbot] Overlap detected and chatbot is visible. Hiding chatbot.');
+            icon.click();
+            chatbotHiddenByOverlap = true; // c'è stato overlap quindi si blocca
+        } else if (!shouldHideChatbot && isChatbotHidden) {
+            if (chatbotHiddenByOverlap || !isTourActive) {
+                console.log('[Chatbot] No overlap/Tour not active, and chatbot is hidden. Showing chatbot.');
+                icon.click();
+                chatbotHiddenByOverlap = false;
+            } else {
+                 console.log('[Chatbot] Chatbot is hidden, no overlap, but not hidden by automation. User choice respected.');
+            }
+        }
+    };
+
+
+    /* Gestione input da parte del frontend */
     inputEl.addEventListener('keydown', async e => {
       if (e.key !== 'Enter') return;
       const userTxt = inputEl.value.trim();
@@ -85,20 +199,22 @@
         const res  = await fetch('http://127.0.0.1:8000/chat', {
           method : 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body   : JSON.stringify({ message: userTxt })
+          body   : JSON.stringify({
+            message: userTxt,
+            current_page_url: window.location.href
+          })
         });
         const data = await res.json();
         appendMessage(data.answer, 'bot');
         if (!Array.isArray(data.tour_steps)) return;
 
-        /* ----- map tour steps ----- */
         const steps = data.tour_steps.map(s => {
           const el = document.querySelector(s.selector);
           if (!el) {
             console.warn('[Tour] selector not found:', s.selector);
             return null;
           }
-          const rect = el.getBoundingClientRect();   // forza reflow
+          const rect = el.getBoundingClientRect();
           return {
             element : el,
             intro   : s.intro,
@@ -107,7 +223,6 @@
         }).filter(Boolean);
         if (!steps.length) return;
 
-        /* ----- pre-scroll & show elements ----- */
         await Promise.all(
           steps.map(st => new Promise(resv => {
             forceShowHierarchy(st.element);
@@ -116,7 +231,6 @@
           }))
         );
 
-        /* ----- z-index overlay ----- */
         const zCss = document.createElement('style');
         zCss.textContent = `
           .introjs-overlay,
@@ -124,45 +238,78 @@
           .introjs-tooltip { z-index: 999999 !important; }`;
         document.head.appendChild(zCss);
 
-        /* ----- start tour with resize keep-alive ----- */
         let lastEl = null;
-        let resizeInterval;                       // <- intervallo qui
-
+        let resizeInterval;
         const intro = introJs().setOptions({ steps, tooltipPosition: 'auto' })
           .onbeforechange(el => {
+            if (!el) {
+                console.log('[Tour] onbeforechange called with undefined element (likely tour ending). Skipping element manipulation.');
+                return; // non procedere se il tour  finito
+            }
             if (lastEl && lastEl !== el) restoreElement(lastEl);
             forceShowHierarchy(el);
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            window.dispatchEvent(new Event('resize')); // primo resize
+            window.dispatchEvent(new Event('resize'));
+            handleChatbotVisibilityBasedOnTourElements(); // si fa il check subito prima della modifica
             lastEl = el;
           })
-          .onafterchange(() => {
-            window.dispatchEvent(new Event('resize')); // ulteriore resize
+          .onafterchange(el => {
+            if (!el) {
+                console.log('[Tour] onafterchange called with undefined element (likely tour ending). Skipping element manipulation.');
+                return; // Do not proceed if el is undefined
+            }
+            window.dispatchEvent(new Event('resize'));
+            handleChatbotVisibilityBasedOnTourElements(); // si fa il check subito dopo la modifica
           })
           .oncomplete(() => {
             clearInterval(resizeInterval);
+            clearInterval(overlapCheckInterval);
             restoreElement(lastEl);
+            // il chatbot deve essere visibile quando la guida viene terminata
+            if (chatWin.classList.contains('hidden')) {
+                console.log('[Chatbot] Tour complete, ensuring chatbot is shown.');
+                icon.click();
+            }
+            chatbotHiddenByOverlap = false;
+            if (!chatWin.classList.contains('hidden')) {
+                lastKnownChatbotRect = chatWin.getBoundingClientRect();
+            }
+            if (zCss.parentNode) {
+                zCss.parentNode.removeChild(zCss);
+            }
           })
           .onexit(() => {
             clearInterval(resizeInterval);
+            clearInterval(overlapCheckInterval);
             restoreElement(lastEl);
+            // il chatbot deve essere visibile quando la guida viene terminata
+            if (chatWin.classList.contains('hidden')) {
+                console.log('[Chatbot] Tour exited, ensuring chatbot is shown.');
+                icon.click();
+            }
+            chatbotHiddenByOverlap = false; // reset flag una volta usciti dalla guida visuale
+            if (!chatWin.classList.contains('hidden')) {
+                lastKnownChatbotRect = chatWin.getBoundingClientRect();
+            }
+            if (zCss.parentNode) {
+                zCss.parentNode.removeChild(zCss);
+            }
           });
 
-        /* avvia intervallo ogni 250 ms durante il tour */
-        resizeInterval = setInterval(() =>
-          window.dispatchEvent(new Event('resize')), 250);
+        overlapCheckInterval = setInterval(handleChatbotVisibilityBasedOnTourElements, 50);
+
+        resizeInterval = setInterval(() => window.dispatchEvent(new Event('resize')), 250);
 
         intro.start();
-
-      } catch (err) {
+      }
+      catch (err) {
         console.error('[Chat] Request failed', err);
         appendMessage('Oops! Server error.', 'bot');
       }
     });
-
   }, 0);
 
-  /* 4) Avvio scraping dopo 10 s */
+  /* Avviamento dello scraping dopo 10 s per aspettare che tutto sia "pronto" */
   setTimeout(() => {
     const url = window.location.href;
     fetch('http://127.0.0.1:8000/api/start-scraping/', {
